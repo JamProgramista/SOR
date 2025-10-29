@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8">
+  <title>Analiza czasu oczekiwania SOR</title>
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+  <style>
+    body { font-family: sans-serif; margin: 20px; background: #fafafa; }
+    label { margin-right: 10px; }
+    select, input[type="checkbox"] { margin-right: 10px; }
+    #chart { width: 100%; height: 600px; margin-top: 20px; }
+    .checkbox-group { margin: 10px 0; }
+  </style>
+</head>
+<body>
+
+  <h2>🚑SOR : Analiza czasu oczekiwania 2025-10-20:27 
+  <a href='https://www.youtube.com/@patodeweloperka/videos'><img src="https://www.youtube.com/favicon.ico">Youtube</a> |
+   <a href='https://discord.gg/Uh4UdpD2rq'> Discord</a> |
+   <a href='https://pacjent.gov.pl/szpitalny-oddzial-ratunkowy-sor'> Źródło </a>
+  </h2>
+
+  <label>Instytucja:</label>
+  <select id="institutionSelect">
+    <option value="">-- wybierz instytucję --</option>
+  </select>
+
+  <div class="checkbox-group" id="priorityGroup">
+    <label><input type="checkbox" value="Priorytet najwyższy" checked> Najwyższy A</label>
+    <label><input type="checkbox" value="Priorytet wysoki" checked> Wysoki B</label>
+    <label><input type="checkbox" value="Priorytet średni" checked> Średni C</label>
+    <label><input type="checkbox" value="Priorytet niski" checked> Niski D</label>
+    <label><input type="checkbox" value="Priorytet najniższy" checked> Najniższy</label>
+    <label><input type="checkbox" value="Rejestracja" checked> Rejestracja</label>
+    <label><input type="checkbox" value="Triaż" checked> Triaż</label>
+  </div>
+  Zoom - możesz przybliżyć wykres zaznaczjąc obszar. Kliknij dwa razy aby zresetować.
+
+  <div id="chart"></div>
+
+  <script>
+  const hospitalsFile = "hospitals.json";
+  const dataFile = "data.json";
+
+  let hospitals = [];
+  let dataset = [];
+
+Promise.all([
+  fetch(hospitalsFile).then(r => r.json()),
+  fetch(dataFile).then(r => r.json())
+])
+.then(([hospitalsData, timeData]) => {
+  hospitals = hospitalsData;
+  dataset = timeData;
+  populateInstitutionSelect(hospitals);
+
+  // --- odczyt parametrów z URL (TU przenosimy) ---
+  const urlParams = new URLSearchParams(window.location.search);
+  const urlInstitution = urlParams.get('institution');
+  const urlPriorities = urlParams.get('priority') ? urlParams.get('priority').split(',') : [];
+
+
+  // ustawiamy instytucję, jeśli jest w URL
+  if (urlInstitution) {
+    const select = document.getElementById('institutionSelect');
+    select.value = urlInstitution;
+  }
+
+  // ustawiamy priorytety, jeśli są w URL
+  if (urlPriorities.length > 0) {
+    const select = document.getElementById('prioritySelect');
+    for (const option of select.options) {
+      if (urlPriorities.includes(option.value)) {
+        option.selected = true;
+      }
+    }
+  }
+
+  // jeśli oba parametry są obecne, generujemy wykres automatycznie
+  if (urlInstitution && urlPriorities.length > 0) {
+    updateChart();
+  }
+});
+
+// --- odczyt parametrów z URL ---
+const urlParams = new URLSearchParams(window.location.search);
+const urlInstitution = urlParams.get('institution');
+const urlPriorities = urlParams.get('priority') ? urlParams.get('priority').split(',') : [];
+
+// jeśli mamy institution z URL, ustaw w select
+if (urlInstitution) {
+  document.getElementById('institutionSelect').value = urlInstitution;
+}
+
+// jeśli mamy priorytety z URL (może być kilka, rozdzielonych przecinkami)
+if (urlPriorities.length > 0) {
+  const select = document.getElementById('prioritySelect');
+  for (const option of select.options) {
+    if (urlPriorities.includes(option.value)) {
+      option.selected = true;
+    }
+  }
+}
+
+// jeśli oba parametry są obecne, automatycznie generujemy wykres
+if (urlInstitution) {
+  updateChart();  // wywołaj funkcję, która rysuje wykres
+}
+
+function updateURLParams(institutionId) {
+  const params = new URLSearchParams();
+  params.set('institution', institutionId);
+  const newUrl = `${window.location.pathname}?${params.toString()}`;
+  window.history.replaceState({}, '', newUrl);
+}
+
+
+  function populateInstitutionSelect(hospitals) {
+    const select = document.getElementById("institutionSelect");
+
+    hospitals.forEach(h => {
+      const woj = h["Województwo"] || "";
+      const miejsc = h["adr_lok_miejsc"] || "";
+      const ulica = h["adr_lok_ulica"] || "";
+      const nazwa = h["nazwa_miejsca"] || "";
+
+      const label = [woj, miejsc, ulica, nazwa].filter(Boolean).join(" / ");
+      const opt = document.createElement("option");
+      opt.value = h["institution_id"];
+      opt.textContent = label || h["institution_id"];
+      select.appendChild(opt);
+    });
+
+    select.addEventListener("change", renderChart);
+    document.querySelectorAll("#priorityGroup input[type='checkbox']").forEach(cb => {
+      cb.addEventListener("change", renderChart);
+    });
+  }
+
+  function renderChart() {
+    const inst = document.getElementById("institutionSelect").value;
+    const checkedPriorities = Array.from(document.querySelectorAll("#priorityGroup input[type='checkbox']:checked"))
+      .map(cb => cb.value);
+    const chartDiv = document.getElementById("chart");
+
+    if (!inst) {
+      Plotly.purge(chartDiv);
+      chartDiv.innerHTML = "<p>Wybierz instytucję.</p>";
+      return;
+    }
+
+    const filtered = dataset
+      .filter(d => d.institution_id === inst)
+      .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    if (filtered.length === 0) {
+      Plotly.purge(chartDiv);
+      chartDiv.innerHTML = "<p>Brak danych dla tej instytucji.</p>";
+      return;
+    }
+
+    const traces = [];
+    const colorsOrg = [
+      "#007bff", "#28a745", "#ff7f0e", "#9467bd", "#d62728", "#17becf"
+    ];
+    const colors = ["red","orange","brown","blue","green","black"];
+
+    checkedPriorities.forEach((prio, idx) => {
+      const x = filtered.map(d => d.date);
+      const yWait = filtered.map(d => Number(d[`${prio}_wait`]) || 0);
+      const yCount = filtered.map(d => Number(d[`${prio}_count`]) || 0);
+
+      traces.push({
+        x, y: yWait,
+        mode: "lines+markers",
+        type: "scatter",
+        name: `${prio} — czas oczekiwania (min)`,
+        line: { width: 1, color: colors[idx % colors.length] , shape:"dot"},
+        marker: { size: 2 },
+        hovertemplate: 
+          `<b>${prio}</b><br>` +
+          `Czas oczekiwania: %{y} min<extra></extra>`
+      });
+
+      traces.push({
+        x, y: yCount,
+        mode: "lines+markers",
+        type: "scatter",
+        name: `${prio} — liczba oczekujących`,
+        yaxis: "y2",
+        line: { width: 1, color: colors[idx % colors.length], dash: "spline" },
+        marker: { size: 2 },
+        hovertemplate: 
+          `<b>${prio}</b><br>` +
+          `Liczba oczekujących: %{y}<extra></extra>`
+      });
+    });
+
+    const layout = {
+      title: `Instytucja: ${inst}`,
+      xaxis: { title: "Data - SOR Analiza by YT:Patodeweloperka team 2025", type: "date", tickformat: "%a %Y-%m-%d %H:%M"},
+      yaxis: { title: "Czas oczekiwania (min)", side: "left" },
+      yaxis2: {
+        title: "Liczba oczekujących",
+        overlaying: "y",
+        side: "right"
+      },
+      hovermode: "x unified",
+      hoverlabel: {
+        bgcolor: "rgba(255,255,255,0.9)",
+        bordercolor: "#333",
+        font: { size: 13 },
+        align: "left",
+        namelength: -1  // pokazuje pełną nazwę serii
+      },
+      margin: { t: 80, l: 60, r: 60, b: 60 },
+      legend: { x: 0, y: 1.15, orientation: "h" }
+    };
+
+    Plotly.newPlot(chartDiv, traces, layout);
+    console.log("Wybrano "+ inst);
+    //updateURLParams(inst);
+  }
+  </script>
+
+</body>
+</html>
